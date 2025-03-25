@@ -9,6 +9,14 @@ const VitalSignSchema = new mongoose.Schema(
       required: true,
       index: true // Indexed for faster queries by user
     },
+    derivedValues: {
+      map: { type: Number },                // For blood pressure
+      pulsePressure: { type: Number },      // For blood pressure
+      percentMaxHR: { type: Number },       // For heart rate
+      hrZone: { type: String },             // For heart rate
+      o2Zone: { type: String },             // For oxygen level
+      glucoseZone: { type: String }         // For glucose
+    },
     type: {
       type: String,
       enum: ['bloodPressure', 'glucose', 'weight', 'temperature', 'heartRate', 'oxygenLevel', 'other'],
@@ -86,6 +94,7 @@ const HealthCheckInSchema = new mongoose.Schema(
       required: true,
       index: true // Indexed for faster queries by user
     },
+    previousFollowUpQuestions: [{ type: String }],
     feeling: {
       type: String,
       enum: ['good', 'fair', 'poor'],

@@ -28,5 +28,7 @@ router.get('/follow-ups', healthController.getPendingFollowUps);
 
 // Dashboard route
 router.get('/dashboard', aiLimiter, healthController.getHealthDashboard);
-
+router.get('/vitals/trends', healthController.getVitalTrends);
+router.get('/vitals/correlations', healthController.getVitalCorrelations);
+router.get('/symptoms/patterns', healthController.getSymptomPatterns);
 module.exports = router;
