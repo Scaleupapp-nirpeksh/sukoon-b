@@ -2470,4 +2470,1510 @@ async function triggerCaregiverNotification(userId, type, data) {
   }
 }
 
+// GET /api/health/vitals/trends
+exports.getVitalTrends = async (req, res) => {
+  try {
+    const { groupBy = 'day', type, from, to } = req.query;
+    
+    // Validate groupBy parameter
+    const validGroupings = ['day', 'week', 'month'];
+    if (!validGroupings.includes(groupBy)) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Invalid groupBy parameter. Must be one of: ${validGroupings.join(', ')}`
+      });
+    }
+    
+    // Create date range filter if provided
+    const dateFilter = {};
+    if (from || to) {
+      if (from) dateFilter.from = new Date(from);
+      if (to) dateFilter.to = new Date(to);
+    }
+    
+    // Calculate enhanced trends with the requested parameters
+    const trends = await calculateEnhancedTrends(req.user._id, groupBy, type, dateFilter);
+    
+    // Generate human-readable insight for each vital type
+    const trendsWithInsights = {};
+    
+    for (const [vitalType, data] of Object.entries(trends)) {
+      // Skip if no readings for this type
+      if (!data || data.readings === 0) continue;
+      
+      trendsWithInsights[vitalType] = {
+        ...data,
+        insight: generateTrendInsight(vitalType, data)
+      };
+    }
+    
+    // Check if we have data
+    if (Object.keys(trendsWithInsights).length === 0) {
+      return res.status(200).json({
+        status: 'success',
+        message: 'No vital sign data available for the specified criteria',
+        trends: {}
+      });
+    }
+    
+    res.status(200).json({
+      status: 'success',
+      trends: trendsWithInsights,
+      groupBy,
+      period: {
+        from: dateFilter.from || 'all available',
+        to: dateFilter.to || 'latest'
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting vital trends:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get vital trends',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to generate human-readable insights for trends
+function generateTrendInsight(type, trendData) {
+  try {
+    const { trendDirection, changePercentage, readings, normalCount, abnormalCount, variability } = trendData;
+    
+    // No readings case
+    if (readings === 0) {
+      return "No readings available to analyze trends.";
+    }
+    
+    // Normal/abnormal ratio
+    const normalPercentage = Math.round((normalCount / readings) * 100);
+    
+    // Start with type-specific context
+    let typeContext = '';
+    switch (type) {
+      case 'bloodPressure':
+        typeContext = 'blood pressure';
+        break;
+      case 'glucose':
+        typeContext = 'blood glucose';
+        break;
+      case 'heartRate':
+        typeContext = 'heart rate';
+        break;
+      case 'oxygenLevel':
+        typeContext = 'oxygen saturation';
+        break;
+      case 'temperature':
+        typeContext = 'body temperature';
+        break;
+      case 'weight':
+        typeContext = 'weight';
+        break;
+      default:
+        typeContext = type;
+    }
+    
+    // Basic insight based on trend direction with reassuring tone
+    let message = '';
+    if (trendDirection === 'increasing') {
+      if ((type === 'bloodPressure' || type === 'glucose') && changePercentage > 5) {
+        message = `Your ${typeContext} readings have been gradually increasing by about ${changePercentage}% over this period. Small variations are normal, and tracking helps you stay informed. `;
+      } else if (type === 'oxygenLevel' && changePercentage > 2) {
+        message = `Your ${typeContext} has improved by about ${changePercentage}% during this period, which is a positive trend. `;
+      } else {
+        message = `Your ${typeContext} readings have shown a slight upward trend of about ${changePercentage}% over this period. `;
+      }
+    } else if (trendDirection === 'decreasing') {
+      if ((type === 'bloodPressure' || type === 'glucose') && changePercentage > 5) {
+        message = `Your ${typeContext} readings have been gradually decreasing by about ${changePercentage}% over this period, which can be a positive change depending on your baseline. `;
+      } else if (type === 'oxygenLevel' && changePercentage > 2) {
+        message = `Your ${typeContext} has decreased slightly by about ${changePercentage}% during this period. Remember that small variations are normal. `;
+      } else {
+        message = `Your ${typeContext} readings have shown a slight downward trend of about ${changePercentage}% over this period. `;
+      }
+    } else {
+      message = `Your ${typeContext} readings have remained relatively stable over this period, which is generally a good sign of consistency. `;
+    }
+    
+    // Add information about normal readings
+    if (normalPercentage >= 85) {
+      message += `${normalPercentage}% of your readings have been within normal range, which is excellent. `;
+    } else if (normalPercentage >= 70) {
+      message += `${normalPercentage}% of your readings have been within normal range, which is good. `;
+    } else {
+      message += `${normalPercentage}% of your readings have been within normal range. Continuing to track helps you and your healthcare provider understand these patterns better. `;
+    }
+    
+    // Add variability insight if available
+    if (variability) {
+      const mainKey = type === 'bloodPressure' ? 'systolic' : 
+                      type === 'glucose' ? 'glucoseLevel' : 
+                      type === 'heartRate' ? 'heartRate' : 
+                      type === 'oxygenLevel' ? 'oxygenLevel' : 
+                      type === 'weight' ? 'weight' : 'value';
+                      
+      if (variability[mainKey] && parseFloat(variability[mainKey]) > 0) {
+        const variabilityValue = parseFloat(variability[mainKey]);
+        if (variabilityValue < 5) {
+          message += `Your readings show minimal variability, suggesting good stability.`;
+        } else if (variabilityValue < 10) {
+          message += `Your readings show moderate variability, which is common in daily measurements.`;
+        } else {
+          message += `Your readings show some variability, which is something to keep an eye on while continuing your tracking.`;
+        }
+      }
+    }
+    
+    return message;
+  } catch (error) {
+    logger.error('Error generating trend insight:', error);
+    return "Trend analysis available, but detailed insight generation was not possible.";
+  }
+}
+
+// GET /api/health/vitals/correlations
+exports.getVitalCorrelations = async (req, res) => {
+  try {
+    const { minCorrelation = 0.3, from, to } = req.query;
+    
+    // Create date range filter if provided
+    const dateFilter = {};
+    if (from || to) {
+      if (from) dateFilter.from = new Date(from);
+      if (to) dateFilter.to = new Date(to);
+    }
+    
+    // Calculate correlations between different vital signs with filter criteria
+    const correlationResults = await calculateVitalSignCorrelations(
+      req.user._id, 
+      parseFloat(minCorrelation),
+      dateFilter
+    );
+    
+    // Add human-readable interpretations for the correlations
+    const enhancedCorrelations = correlationResults.correlations.map(correlation => ({
+      ...correlation,
+      userFriendlyInterpretation: generateCorrelationInsight(correlation)
+    }));
+    
+    // Prepare response
+    const response = {
+      status: 'success',
+      correlations: enhancedCorrelations,
+      dailyReadingsCount: correlationResults.dailyReadingsCount,
+      significantCorrelationsCount: enhancedCorrelations.length,
+      message: correlationResults.message
+    };
+    
+    // Add recommendation if few or no correlations found
+    if (enhancedCorrelations.length < 2 && correlationResults.dailyReadingsCount > 0) {
+      response.recommendation = "Continue tracking multiple vital signs regularly to reveal more correlations between them. The more data you provide, the more insights become available.";
+    }
+    
+    res.status(200).json(response);
+  } catch (error) {
+    logger.error('Error getting vital correlations:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get vital correlations',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to generate human-readable correlation insights
+function generateCorrelationInsight(correlation) {
+  try {
+    const { metric1, metric2, correlation: value, strength, direction } = correlation;
+    
+    // Extract readable metric names
+    const getReadableMetricName = (metricPath) => {
+      const parts = metricPath.split('.');
+      let readableName = '';
+      
+      switch (parts[0]) {
+        case 'bloodPressure':
+          readableName = parts[1] === 'systolic' ? 'systolic blood pressure' : 'diastolic blood pressure';
+          break;
+        case 'glucose':
+          readableName = 'blood glucose';
+          break;
+        case 'heartRate':
+          readableName = 'heart rate';
+          break;
+        case 'oxygenLevel':
+          readableName = 'oxygen saturation';
+          break;
+        case 'temperature':
+          readableName = 'body temperature';
+          break;
+        case 'weight':
+          readableName = 'weight';
+          break;
+        default:
+          readableName = metricPath;
+      }
+      
+      return readableName;
+    };
+    
+    const metric1Name = getReadableMetricName(metric1);
+    const metric2Name = getReadableMetricName(metric2);
+    
+    // Create a user-friendly message with reassuring tone
+    let message = `There appears to be a ${strength} ${direction} relationship between your ${metric1Name} and ${metric2Name}. `;
+    
+    if (direction === 'positive') {
+      message += `This means that when one increases, the other tends to increase as well. `;
+    } else {
+      message += `This means that when one increases, the other tends to decrease. `;
+    }
+    
+    // Add health context if appropriate for common physiological relationships
+    if ((metric1.includes('bloodPressure') && metric2.includes('heartRate')) || 
+        (metric2.includes('bloodPressure') && metric1.includes('heartRate'))) {
+      message += `This is a common physiological relationship many people experience, as your heart often works harder (faster heart rate) to maintain blood pressure.`;
+    } else if ((metric1.includes('temperature') && metric2.includes('heartRate')) || 
+               (metric2.includes('temperature') && metric1.includes('heartRate'))) {
+      message += `This is a normal physiological response, as your heart typically beats faster when body temperature rises.`;
+    } else if ((metric1.includes('oxygenLevel') && metric2.includes('heartRate')) || 
+               (metric2.includes('oxygenLevel') && metric1.includes('heartRate'))) {
+      message += `Your body may be compensating for oxygen levels by adjusting heart rate, which is a normal regulatory response.`;
+    } else {
+      message += `Tracking these measurements over time helps you understand your personal health patterns better.`;
+    }
+    
+    return message;
+  } catch (error) {
+    logger.error('Error generating correlation insight:', error);
+    return "A correlation has been detected between these measurements.";
+  }
+}
+
+// GET /api/health/symptoms/patterns
+exports.getSymptomPatterns = async (req, res) => {
+  try {
+    const { from, to, includeDetails = 'true' } = req.query;
+    
+    // Create date range filter if provided
+    const dateFilter = {};
+    if (from || to) {
+      if (from) dateFilter.from = new Date(from);
+      if (to) dateFilter.to = new Date(to);
+    }
+    
+    // Analyze patterns in reported symptoms
+    const patterns = await analyzeSymptomPatterns(req.user._id, dateFilter);
+    
+    // If no symptoms found, return early
+    if (patterns.totalCheckInsWithSymptoms === 0) {
+      return res.status(200).json({
+        status: 'success',
+        message: 'No symptom data found for the specified period',
+        patterns: {
+          totalCheckInsWithSymptoms: 0,
+          uniqueSymptomCount: 0,
+          daysWithSymptoms: 0
+        }
+      });
+    }
+    
+    // Add human-readable insights about symptom patterns
+    let insights = [];
+    
+    if (patterns.symptomMetrics && patterns.symptomMetrics.length > 0) {
+      // Add insight about most frequent symptom
+      const mostFrequent = patterns.symptomMetrics[0];
+      insights.push(`Your most frequent symptom is "${mostFrequent.name}" which has occurred on ${mostFrequent.dayCount} days (${mostFrequent.prevalence}% of days with health check-ins).`);
+      
+      // Add insight about symptom severity if available
+      if (mostFrequent.averageSeverity) {
+        insights.push(`On average, you rate the severity of "${mostFrequent.name}" as ${mostFrequent.averageSeverity} out of 5.`);
+      }
+      
+      // Add insight about symptom pattern
+      const symptomPattern = detectSymptomPattern(mostFrequent.occurrences);
+      if (symptomPattern) {
+        insights.push(symptomPattern);
+      }
+      
+      // Add insight about co-occurring symptoms if available
+      if (patterns.coOccurrenceMetrics && patterns.coOccurrenceMetrics.length > 0) {
+        const topCoOccurrence = patterns.coOccurrenceMetrics[0];
+        insights.push(`"${topCoOccurrence.symptoms[0]}" and "${topCoOccurrence.symptoms[1]}" frequently occur together (${topCoOccurrence.dayCount} days, ${topCoOccurrence.prevalence}% of symptom days).`);
+      }
+      
+      // Add insight about recent symptoms
+      if (patterns.recentSymptomCount > 0) {
+        insights.push(`In the past 7 days, you've experienced symptoms on ${patterns.recentDaysWithSymptoms} days with a total of ${patterns.recentSymptomCount} symptom occurrences.`);
+      }
+    } else {
+      insights.push("Not enough symptom data available to analyze patterns.");
+    }
+    
+    // Determine if we should include detailed metrics based on query param
+    const responsePatterns = {
+      ...patterns,
+      insights
+    };
+    
+    // If details aren't requested, remove the detailed arrays
+    if (includeDetails !== 'true') {
+      if (responsePatterns.symptomMetrics) {
+        responsePatterns.symptomMetrics = responsePatterns.symptomMetrics.map(metric => {
+          const { occurrences, ...rest } = metric;
+          return rest;
+        });
+      }
+      
+      if (responsePatterns.coOccurrenceMetrics) {
+        // Keep coOccurrenceMetrics but remove any large arrays
+        responsePatterns.coOccurrenceMetrics = responsePatterns.coOccurrenceMetrics.map(metric => {
+          const { details, ...rest } = metric;
+          return rest;
+        });
+      }
+    }
+    
+    res.status(200).json({
+      status: 'success',
+      patterns: responsePatterns
+    });
+  } catch (error) {
+    logger.error('Error getting symptom patterns:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get symptom patterns',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to detect patterns in symptom occurrences
+function detectSymptomPattern(occurrences) {
+  try {
+    if (!occurrences || occurrences.length < 3) {
+      return null;
+    }
+    
+    // Sort by date
+    const sortedOccurrences = [...occurrences].sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    // Check for specific patterns
+    
+    // Pattern 1: Increasing severity
+    let increasingCount = 0;
+    for (let i = 1; i < sortedOccurrences.length; i++) {
+      if (sortedOccurrences[i].severity > sortedOccurrences[i-1].severity) {
+        increasingCount++;
+      }
+    }
+    const increasingPercentage = (increasingCount / (sortedOccurrences.length - 1)) * 100;
+    
+    // Pattern 2: Decreasing severity
+    let decreasingCount = 0;
+    for (let i = 1; i < sortedOccurrences.length; i++) {
+      if (sortedOccurrences[i].severity < sortedOccurrences[i-1].severity) {
+        decreasingCount++;
+      }
+    }
+    const decreasingPercentage = (decreasingCount / (sortedOccurrences.length - 1)) * 100;
+    
+    // Pattern 3: Time of day pattern (morning, afternoon, evening)
+    const timeOfDayMap = {
+      morning: 0,
+      afternoon: 0,
+      evening: 0
+    };
+    
+    sortedOccurrences.forEach(occurrence => {
+      const hour = new Date(occurrence.date).getHours();
+      if (hour >= 5 && hour < 12) {
+        timeOfDayMap.morning++;
+      } else if (hour >= 12 && hour < 18) {
+        timeOfDayMap.afternoon++;
+      } else {
+        timeOfDayMap.evening++;
+      }
+    });
+    
+    const maxTimeOfDay = Object.entries(timeOfDayMap).sort((a, b) => b[1] - a[1])[0];
+    const timeOfDayPercentage = (maxTimeOfDay[1] / sortedOccurrences.length) * 100;
+    
+    // Determine the most significant pattern
+    if (increasingPercentage > 60) {
+      return `This symptom has shown an increasing trend in severity over time.`;
+    } else if (decreasingPercentage > 60) {
+      return `This symptom has shown a decreasing trend in severity over time, which is positive.`;
+    } else if (timeOfDayPercentage > 60) {
+      return `This symptom tends to occur most frequently in the ${maxTimeOfDay[0]} (${Math.round(timeOfDayPercentage)}% of occurrences).`;
+    }
+    
+    return null;
+  } catch (error) {
+    logger.error('Error detecting symptom pattern:', error);
+    return null;
+  }
+}
+
+// GET /api/health/lifestyle/trends
+exports.getLifestyleTrends = async (req, res) => {
+  try {
+    const { from, to, factor } = req.query;
+    
+    // Create date range filter if provided
+    const dateFilter = {};
+    if (from || to) {
+      if (from) dateFilter.from = new Date(from);
+      if (to) dateFilter.to = new Date(to);
+    }
+    
+    // Calculate lifestyle trends with date filter
+    const lifestyleTrends = await calculateLifestyleTrends(req.user._id, dateFilter);
+    
+    // Handle case with no data
+    if (lifestyleTrends.checkInCount === 0) {
+      return res.status(200).json({
+        status: 'success',
+        message: 'No lifestyle data found for the specified period',
+        lifestyleTrends: {
+          checkInCount: 0
+        }
+      });
+    }
+    
+    // Generate personalized recommendations based on the data
+    const recommendations = generateLifestyleRecommendations(lifestyleTrends);
+    
+    // If a specific factor is requested, filter the response
+    if (factor) {
+      const validFactors = ['sleep', 'stress', 'medication', 'water', 'exercise'];
+      if (!validFactors.includes(factor)) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Invalid factor parameter. Must be one of: ${validFactors.join(', ')}`
+        });
+      }
+      
+      const factorKey = factor === 'sleep' ? 'sleepMetrics' : 
+                         factor === 'stress' ? 'stressMetrics' : 
+                         factor === 'medication' ? 'medicationMetrics' : 
+                         factor === 'water' ? 'waterMetrics' : 
+                         'exerciseMetrics';
+      
+      const factorRecommendations = recommendations.filter(rec => rec.category === factor);
+      
+      res.status(200).json({
+        status: 'success',
+        factor,
+        metrics: lifestyleTrends[factorKey] || null,
+        recommendations: factorRecommendations,
+        correlations: lifestyleTrends.correlations ? 
+          (lifestyleTrends.correlations.correlations || []).filter(corr => corr.factor.includes(factor)) : []
+      });
+    } else {
+      // Return complete lifestyle trends
+      res.status(200).json({
+        status: 'success',
+        lifestyleTrends: {
+          ...lifestyleTrends,
+          recommendations
+        }
+      });
+    }
+  } catch (error) {
+    logger.error('Error getting lifestyle trends:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get lifestyle trends',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to generate lifestyle recommendations
+function generateLifestyleRecommendations(lifestyleTrends) {
+  const recommendations = [];
+  
+  // Sleep recommendations
+  if (lifestyleTrends.sleepMetrics) {
+    const avgSleep = lifestyleTrends.sleepMetrics.averageSleepHours;
+    if (avgSleep < 7) {
+      recommendations.push({
+        category: 'sleep',
+        text: `You're averaging ${avgSleep} hours of sleep, which is below the recommended 7-9 hours. Consider going to bed 30 minutes earlier to improve your rest.`,
+        priority: 'high'
+      });
+    } else if (avgSleep > 9) {
+      recommendations.push({
+        category: 'sleep',
+        text: `You're averaging ${avgSleep} hours of sleep. While rest is important, consistently sleeping more than 9 hours might indicate other health patterns worth discussing with your healthcare provider.`,
+        priority: 'medium'
+      });
+    } else {
+      recommendations.push({
+        category: 'sleep',
+        text: `Great job maintaining healthy sleep patterns with an average of ${avgSleep} hours! Consistent sleep schedules help maintain overall wellbeing.`,
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Stress recommendations
+  if (lifestyleTrends.stressMetrics) {
+    const avgStress = lifestyleTrends.stressMetrics.averageStressLevel;
+    if (avgStress > 3) {
+      recommendations.push({
+        category: 'stress',
+        text: `Your recent stress levels have been elevated (${avgStress}/5). Consider incorporating brief mindfulness exercises or short breaks throughout your day.`,
+        priority: 'high'
+      });
+    } else if (avgStress > 2) {
+      recommendations.push({
+        category: 'stress',
+        text: `Your stress levels are moderate (${avgStress}/5). Regular relaxation techniques can help maintain balance in your daily life.`,
+        priority: 'medium'
+      });
+    } else {
+      recommendations.push({
+        category: 'stress',
+        text: `You're managing stress well (${avgStress}/5). Continue the practices that help you maintain this positive balance.`,
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Medication adherence recommendations
+  if (lifestyleTrends.medicationMetrics) {
+    const adherenceRate = lifestyleTrends.medicationMetrics.adherenceRate;
+    if (adherenceRate < 80) {
+      recommendations.push({
+        category: 'medication',
+        text: `Your medication adherence rate is ${adherenceRate}%. Setting reminders or establishing a routine might help improve consistency.`,
+        priority: 'high'
+      });
+    } else if (adherenceRate < 90) {
+      recommendations.push({
+        category: 'medication',
+        text: `Your medication adherence rate is good at ${adherenceRate}%. Look for patterns in the times you miss doses to further improve.`,
+        priority: 'medium'
+      });
+    } else {
+      recommendations.push({
+        category: 'medication',
+        text: `Excellent medication adherence at ${adherenceRate}%! Consistent medication habits contribute significantly to your health management.`,
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Water intake recommendations
+  if (lifestyleTrends.waterMetrics) {
+    const avgWater = lifestyleTrends.waterMetrics.averageWaterIntake;
+    if (avgWater < 6) {
+      recommendations.push({
+        category: 'water',
+        text: `Your water intake (${avgWater} glasses per day) is below recommendations. Try keeping a water bottle visible as a reminder to drink more throughout the day.`,
+        priority: 'medium'
+      });
+    } else {
+      recommendations.push({
+        category: 'water',
+        text: `You're doing well with hydration at ${avgWater} glasses per day. Consistent hydration supports many aspects of health.`,
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Exercise recommendations
+  if (lifestyleTrends.exerciseMetrics) {
+    const avgExercise = lifestyleTrends.exerciseMetrics.averageExerciseMinutes;
+    if (avgExercise < 20) {
+      recommendations.push({
+        category: 'exercise',
+        text: `Adding just a few minutes of light exercise each day, like a short walk, can significantly improve your overall health and mood.`,
+        priority: 'medium'
+      });
+    } else if (avgExercise < 30) {
+      recommendations.push({
+        category: 'exercise',
+        text: `You're averaging ${avgExercise} minutes of exercise. Gradually increasing to 30 minutes on most days would provide additional health benefits.`,
+        priority: 'medium'
+      });
+    } else {
+      recommendations.push({
+        category: 'exercise',
+        text: `Great job maintaining regular exercise at ${avgExercise} minutes per day! Your consistent activity contributes to your overall wellbeing.`,
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Check lifestyle correlations
+  if (lifestyleTrends.correlations && lifestyleTrends.correlations.correlations) {
+    const strongCorrelations = lifestyleTrends.correlations.correlations.filter(c => 
+      Math.abs(c.correlation) > 0.6 && c.sampleSize >= 7
+    );
+    
+    if (strongCorrelations.length > 0) {
+      // Focus on the strongest correlation
+      const topCorrelation = strongCorrelations[0];
+      
+      if (topCorrelation.factor === 'sleepHours' && topCorrelation.direction === 'positive') {
+        recommendations.push({
+          category: 'sleep',
+          text: `Your data shows a strong connection between sleep and how you feel. Prioritizing consistent, quality sleep appears to be especially important for your wellbeing.`,
+          priority: 'high'
+        });
+      } else if (topCorrelation.factor === 'stressLevel' && topCorrelation.direction === 'negative') {
+        recommendations.push({
+          category: 'stress',
+          text: `Your data reveals a strong connection between lower stress levels and feeling better. Stress management techniques may be particularly beneficial for your health.`,
+          priority: 'high'
+        });
+      } else if (topCorrelation.factor === 'exerciseMinutes' && topCorrelation.direction === 'positive') {
+        recommendations.push({
+          category: 'exercise',
+          text: `Your data shows a strong link between exercise and improved wellbeing. Even short activity periods appear to positively impact how you feel.`,
+          priority: 'high'
+        });
+      }
+    }
+  }
+  
+  return recommendations.sort((a, b) => {
+    const priorityRank = { high: 0, medium: 1, low: 2 };
+    return priorityRank[a.priority] - priorityRank[b.priority];
+  });
+}
+
+// GET /api/health/wellness/trends
+exports.getWellnessTrends = async (req, res) => {
+  try {
+    const { from, to, include_details = 'true' } = req.query;
+    
+    // Create date range filter if provided
+    const dateFilter = {};
+    if (from || to) {
+      if (from) dateFilter.from = new Date(from);
+      if (to) dateFilter.to = new Date(to);
+    }
+    
+    // Calculate wellness trends with date filter
+    const wellnessTrends = await calculateEnhancedWellnessTrends(req.user._id, dateFilter);
+    
+    // Handle case with no data
+    if (wellnessTrends.checkInCount === 0) {
+      return res.status(200).json({
+        status: 'success',
+        message: 'No wellness data found for the specified period',
+        wellnessTrends: {
+          checkInCount: 0,
+          wellnessTrend: 'insufficient_data'
+        }
+      });
+    }
+    
+    // Generate insights based on the wellness trends
+    const insights = generateWellnessInsights(wellnessTrends);
+    
+    // Prepare response with or without details
+    const response = {
+      status: 'success',
+      wellnessTrends: {
+        ...wellnessTrends,
+        insights
+      }
+    };
+    
+    // Remove detailed data points if not requested
+    if (include_details !== 'true') {
+      if (response.wellnessTrends.dataPoints) {
+        delete response.wellnessTrends.dataPoints;
+      }
+      
+      if (response.wellnessTrends.weeklyAverages) {
+        response.wellnessTrends.weeklyAverages = response.wellnessTrends.weeklyAverages.map(week => {
+          const { checkInCount, averageScore, distribution } = week;
+          return { week: week.week, startDate: week.startDate, checkInCount, averageScore, distribution };
+        });
+      }
+    }
+    
+    res.status(200).json(response);
+  } catch (error) {
+    logger.error('Error getting wellness trends:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get wellness trends',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to generate wellness insights
+function generateWellnessInsights(wellnessTrends) {
+  const insights = [];
+  
+  // Overall wellness trend insight
+  if (wellnessTrends.wellnessTrend === 'improving') {
+    insights.push({
+      type: 'trend',
+      text: 'Your overall wellness trend is improving, which is great to see! Continue with the positive habits that are working for you.'
+    });
+  } else if (wellnessTrends.wellnessTrend === 'declining') {
+    insights.push({
+      type: 'trend',
+      text: 'Your overall wellness trend shows some decline recently. Consider what factors might be affecting how you feel and what small changes might help.'
+    });
+  } else if (wellnessTrends.wellnessTrend === 'stable') {
+    insights.push({
+      type: 'trend',
+      text: 'Your overall wellness has been stable recently, showing consistency in how you\'re feeling day to day.'
+    });
+  }
+  
+  // Recent trend insight (more specific)
+  if (wellnessTrends.recentTrend && typeof wellnessTrends.recentTrend !== 'string') {
+    if (wellnessTrends.recentTrend.trend === 'significantly_improving') {
+      insights.push({
+        type: 'recent',
+        text: `You've been feeling notably better in the past week compared to the previous week (${wellnessTrends.recentTrend.percentChange}% improvement).`
+      });
+    } else if (wellnessTrends.recentTrend.trend === 'slightly_improving') {
+      insights.push({
+        type: 'recent',
+        text: `You've been feeling somewhat better in the past week (${wellnessTrends.recentTrend.percentChange}% improvement).`
+      });
+    } else if (wellnessTrends.recentTrend.trend === 'significantly_declining') {
+      insights.push({
+        type: 'recent',
+        text: `You've been feeling less well in the past week compared to the previous week. Small self-care steps might help improve how you're feeling.`
+      });
+    }
+  }
+  
+  // Good day streak insight
+  if (wellnessTrends.goodDayStreak && wellnessTrends.goodDayStreak.length > 2) {
+    insights.push({
+      type: 'streak',
+      text: `Your longest streak of consecutive "good" days was ${wellnessTrends.goodDayStreak.length} days. This is valuable information about what consecutive good days look like for you.`
+    });
+  }
+  
+  // Feeling distribution insight
+  if (wellnessTrends.feelingDistribution) {
+    const { good, fair, poor } = wellnessTrends.feelingDistribution;
+    
+    if (good > 70) {
+      insights.push({
+        type: 'distribution',
+        text: `You're reporting feeling good ${good}% of the time, which is excellent! You're having predominantly positive days.`
+      });
+    } else if (good + fair > 70) {
+      insights.push({
+        type: 'distribution',
+        text: `You're reporting feeling good or fair ${good + fair}% of the time. Most of your days are neutral to positive.`
+      });
+    } else if (poor > 40) {
+      insights.push({
+        type: 'distribution',
+        text: `You're reporting feeling poor ${poor}% of the time. Consider discussing these patterns with your healthcare provider to identify potential supports.`
+      });
+    }
+  }
+  
+  // Weekly pattern insight
+  if (wellnessTrends.weeklyAverages && wellnessTrends.weeklyAverages.length >= 2) {
+    // Find the best and worst weeks
+    const sortedWeeks = [...wellnessTrends.weeklyAverages].sort((a, b) => b.averageScore - a.averageScore);
+    const bestWeek = sortedWeeks[0];
+    const worstWeek = sortedWeeks[sortedWeeks.length - 1];
+    
+    // Only provide insight if there's a meaningful difference
+    if (bestWeek.averageScore - worstWeek.averageScore > 0.5) {
+      insights.push({
+        type: 'weekly',
+        text: `Your best week started around ${new Date(bestWeek.startDate).toLocaleDateString()}. Reflecting on what was different during this period might reveal helpful patterns.`
+      });
+    }
+  }
+  
+  return insights;
+}
+
+// GET /api/health/health-score
+exports.getHealthScore = async (req, res) => {
+  try {
+    // Get all the data needed to calculate health score
+    const latestVitals = await getLatestVitalSigns(req.user._id);
+    const wellnessTrends = await calculateEnhancedWellnessTrends(req.user._id);
+    const lifestyleTrends = await calculateLifestyleTrends(req.user._id);
+    const symptomPatterns = await analyzeSymptomPatterns(req.user._id);
+    
+    // Calculate the comprehensive health score
+    const healthScore = calculateComprehensiveHealthScore(
+      latestVitals,
+      wellnessTrends,
+      lifestyleTrends,
+      symptomPatterns
+    );
+    
+    // Generate insights for each score component
+    const scoreInsights = generateHealthScoreInsights(healthScore);
+    
+    // Generate recommendations based on score components
+    const recommendations = generateHealthScoreRecommendations(healthScore);
+    
+    // Prepare the response
+    res.status(200).json({
+      status: 'success',
+      healthScore: {
+        ...healthScore,
+        insights: scoreInsights,
+        recommendations
+      },
+      lastUpdated: new Date()
+    });
+  } catch (error) {
+    logger.error('Error calculating health score:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to calculate health score',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Extended health score calculation that provides component scores
+function calculateComprehensiveHealthScore(latestVitals, wellnessTrends, lifestyleTrends, symptomPatterns) {
+  try {
+    // Initialize component scores
+    const components = {
+      vitals: {
+        score: 70,
+        weight: 0.3,
+        normalCount: 0,
+        totalCount: 0,
+        details: {}
+      },
+      wellness: {
+        score: 70,
+        weight: 0.3,
+        details: {}
+      },
+      lifestyle: {
+        score: 70,
+        weight: 0.3,
+        details: {}
+      },
+      symptoms: {
+        score: 70,
+        weight: 0.1,
+        details: {}
+      }
+    };
+    
+    // --- Vitals Component ---
+    // Start with a baseline of 70 for vitals
+    if (Object.keys(latestVitals).length > 0) {
+      // Count normal vs abnormal readings
+      Object.entries(latestVitals).forEach(([type, data]) => {
+        components.vitals.totalCount++;
+        
+        if (data.isNormal) {
+          components.vitals.normalCount++;
+        }
+        
+        // Add type-specific details
+        components.vitals.details[type] = {
+          isNormal: data.isNormal,
+          timestamp: data.timestamp
+        };
+      });
+      
+      // Calculate vitals score based on normal percentage
+      if (components.vitals.totalCount > 0) {
+        const normalPercentage = (components.vitals.normalCount / components.vitals.totalCount) * 100;
+        
+        // Scale from 40-100 based on normal percentage
+        components.vitals.score = 40 + (normalPercentage * 0.6);
+      }
+    } else {
+      // No vitals data reduces the weight
+      components.vitals.weight = 0.1;
+      // Redistribute weights
+      components.wellness.weight = 0.4;
+      components.lifestyle.weight = 0.4;
+    }
+    
+    // --- Wellness Component ---
+    if (wellnessTrends && wellnessTrends.checkInCount > 0) {
+      // Base wellness score on feeling distribution
+      if (wellnessTrends.feelingDistribution) {
+        const { good, fair, poor } = wellnessTrends.feelingDistribution;
+        
+        // Calculate weighted score (good=100, fair=60, poor=20)
+        components.wellness.score = (good * 1.0) + (fair * 0.6) + (poor * 0.2);
+        components.wellness.details.feelingDistribution = wellnessTrends.feelingDistribution;
+      }
+      
+      // Adjust for wellness trend
+      if (wellnessTrends.wellnessTrend === 'improving') {
+        components.wellness.score += 5;
+      } else if (wellnessTrends.wellnessTrend === 'declining') {
+        components.wellness.score -= 5;
+      }
+      
+      components.wellness.details.trend = wellnessTrends.wellnessTrend;
+      
+      // Adjust for recent trend
+      if (wellnessTrends.recentTrend && typeof wellnessTrends.recentTrend !== 'string' && wellnessTrends.recentTrend.percentChange) {
+        // Add a small adjustment based on recent trend percentage
+        components.wellness.score += wellnessTrends.recentTrend.percentChange * 0.2;
+        components.wellness.details.recentTrend = wellnessTrends.recentTrend.trend;
+      }
+      
+      // Cap the wellness score between 0-100
+      components.wellness.score = Math.max(0, Math.min(100, components.wellness.score));
+    } else {
+      // No wellness data reduces the weight
+      components.wellness.weight = 0.1;
+      // Redistribute weights
+      components.vitals.weight = 0.4;
+      components.lifestyle.weight = 0.4;
+    }
+    
+    // --- Lifestyle Component ---
+    if (lifestyleTrends && (lifestyleTrends.sleepMetrics || lifestyleTrends.stressMetrics || 
+                            lifestyleTrends.medicationMetrics || lifestyleTrends.exerciseMetrics)) {
+      // Start with baseline score
+      let lifestyleScore = 70;
+      let factorsCount = 0;
+      
+      // Add sleep metrics
+      if (lifestyleTrends.sleepMetrics) {
+        const avgSleep = lifestyleTrends.sleepMetrics.averageSleepHours;
+        factorsCount++;
+        
+        // Optimal sleep (7-9 hours) gets 100
+        if (avgSleep >= 7 && avgSleep <= 9) {
+          lifestyleScore += 30;
+        } 
+        // Suboptimal but close (6-7 or 9-10) gets 80
+        else if ((avgSleep >= 6 && avgSleep < 7) || (avgSleep > 9 && avgSleep <= 10)) {
+          lifestyleScore += 10;
+        }
+        // Very low or high sleep reduces score
+        else if (avgSleep < 5 || avgSleep > 11) {
+          lifestyleScore -= 10;
+        }
+        
+        components.lifestyle.details.sleep = {
+          averageHours: avgSleep,
+          isOptimal: (avgSleep >= 7 && avgSleep <= 9)
+        };
+      }
+      
+      // Add stress metrics
+      if (lifestyleTrends.stressMetrics) {
+        const avgStress = lifestyleTrends.stressMetrics.averageStressLevel;
+        factorsCount++;
+        
+        // Low stress (1-2) gets bonus
+        if (avgStress <= 2) {
+          lifestyleScore += 20;
+        }
+        // High stress (4-5) reduces score
+        else if (avgStress >= 4) {
+          lifestyleScore -= 20;
+        }
+        
+        components.lifestyle.details.stress = {
+          averageLevel: avgStress,
+          isLow: (avgStress <= 2)
+        };
+      }
+      
+      // Add medication adherence
+      if (lifestyleTrends.medicationMetrics) {
+        const adherenceRate = lifestyleTrends.medicationMetrics.adherenceRate;
+        factorsCount++;
+        
+        // High adherence (>90%) gets bonus
+        if (adherenceRate >= 90) {
+          lifestyleScore += 20;
+        }
+        // Medium adherence (70-90%) is neutral
+        else if (adherenceRate >= 70) {
+          // No adjustment
+        }
+        // Low adherence (<70%) reduces score
+        else {
+          lifestyleScore -= 20;
+        }
+        
+        components.lifestyle.details.medicationAdherence = {
+          rate: adherenceRate,
+          isGood: (adherenceRate >= 90)
+        };
+      }
+      
+      // Add exercise metrics
+      if (lifestyleTrends.exerciseMetrics) {
+        const avgExercise = lifestyleTrends.exerciseMetrics.averageExerciseMinutes;
+        factorsCount++;
+        
+        // Good exercise (>=30 min) gets bonus
+        if (avgExercise >= 30) {
+          lifestyleScore += 20;
+        }
+        // Some exercise (10-30 min) gets small bonus
+        else if (avgExercise >= 10) {
+          lifestyleScore += 10;
+        }
+        // Little exercise (<10 min) reduces score slightly
+        else {
+          lifestyleScore -= 10;
+        }
+        
+        components.lifestyle.details.exercise = {
+          averageMinutes: avgExercise,
+          isSufficient: (avgExercise >= 30)
+        };
+      }
+      
+      // Adjust for number of lifestyle factors tracked
+      if (factorsCount > 0) {
+        // Average the adjustments
+        lifestyleScore = 70 + ((lifestyleScore - 70) / factorsCount);
+      }
+      
+      // Cap the lifestyle score between 0-100
+      components.lifestyle.score = Math.max(0, Math.min(100, lifestyleScore));
+    } else {
+      // No lifestyle data reduces the weight
+      components.lifestyle.weight = 0.1;
+      // Redistribute weights
+      components.vitals.weight = 0.4;
+      components.wellness.weight = 0.4;
+    }
+    
+    // --- Symptoms Component ---
+    if (symptomPatterns && symptomPatterns.uniqueSymptomCount > 0) {
+      // Base score of 100, subtract for symptoms
+      let symptomsScore = 100;
+      
+      // Reduce score for recent symptoms (last 7 days)
+      if (symptomPatterns.recentSymptomCount > 0) {
+        // Each recent symptom reduces score (max reduction of 30)
+        const reductionAmount = Math.min(30, symptomPatterns.recentSymptomCount * 5);
+        symptomsScore -= reductionAmount;
+        
+        components.symptoms.details.recentSymptoms = {
+          count: symptomPatterns.recentSymptomCount,
+          days: symptomPatterns.recentDaysWithSymptoms
+        };
+      }
+      
+      // Additional reduction for symptom severity if available
+      if (symptomPatterns.symptomMetrics && symptomPatterns.symptomMetrics.length > 0) {
+        // Calculate average severity across all symptoms
+        let totalSeverity = 0;
+        let severityCount = 0;
+        
+        symptomPatterns.symptomMetrics.forEach(symptom => {
+          if (symptom.averageSeverity) {
+            totalSeverity += symptom.averageSeverity;
+            severityCount++;
+          }
+        });
+        
+        if (severityCount > 0) {
+          const avgSeverity = totalSeverity / severityCount;
+          
+          // Reduce score based on severity (1-5 scale, 5 being worst)
+          // Reduction from 0-30 points
+          const severityReduction = Math.min(30, avgSeverity * 6);
+          symptomsScore -= severityReduction;
+          
+          components.symptoms.details.averageSeverity = avgSeverity;
+        }
+      }
+      
+      // Cap the symptoms score between 0-100
+      components.symptoms.score = Math.max(0, Math.min(100, symptomsScore));
+    } else {
+      // No symptoms is positive
+      components.symptoms.score = 100;
+      components.symptoms.details.noSymptoms = true;
+    }
+    
+    // Calculate weighted total score
+    const totalScore = Math.round(
+      (components.vitals.score * components.vitals.weight) +
+      (components.wellness.score * components.wellness.weight) +
+      (components.lifestyle.score * components.lifestyle.weight) +
+      (components.symptoms.score * components.symptoms.weight)
+    );
+    
+    // Determine health status based on score
+    let status;
+    if (totalScore >= 85) {
+      status = 'excellent';
+    } else if (totalScore >= 70) {
+      status = 'good';
+    } else if (totalScore >= 50) {
+      status = 'fair';
+    } else {
+      status = 'needs_attention';
+    }
+    
+    return {
+      score: totalScore,
+      status,
+      maxScore: 100,
+      components
+    };
+  } catch (error) {
+    logger.error('Error calculating comprehensive health score:', error);
+    return {
+      score: 50,
+      status: 'unknown',
+      maxScore: 100,
+      components: {}
+    };
+  }
+}
+
+// Generate insights for health score components
+function generateHealthScoreInsights(healthScore) {
+  const insights = [];
+  
+  // Overall score insight
+  if (healthScore.status === 'excellent') {
+    insights.push({
+      type: 'overall',
+      text: 'Your overall health score is excellent! You\'re doing a great job managing multiple aspects of your health.'
+    });
+  } else if (healthScore.status === 'good') {
+    insights.push({
+      type: 'overall',
+      text: 'Your overall health score is good. You\'re maintaining positive health habits in many areas.'
+    });
+  } else if (healthScore.status === 'fair') {
+    insights.push({
+      type: 'overall',
+      text: 'Your overall health score is fair. There are some areas where small changes could potentially improve your wellbeing.'
+    });
+  } else if (healthScore.status === 'needs_attention') {
+    insights.push({
+      type: 'overall',
+      text: 'Your health score indicates some areas that may benefit from attention. The recommendations below might help identify specific steps to consider.'
+    });
+  }
+  
+  // Component-specific insights
+  const { components } = healthScore;
+  
+  // Vitals insight
+  if (components.vitals && components.vitals.totalCount > 0) {
+    const normalPercentage = Math.round((components.vitals.normalCount / components.vitals.totalCount) * 100);
+    
+    if (normalPercentage >= 90) {
+      insights.push({
+        type: 'vitals',
+        text: `${normalPercentage}% of your vital signs are within normal ranges, which is excellent.`
+      });
+    } else if (normalPercentage >= 70) {
+      insights.push({
+        type: 'vitals',
+        text: `${normalPercentage}% of your vital signs are within normal ranges. Continued tracking helps identify patterns over time.`
+      });
+    } else {
+      insights.push({
+        type: 'vitals',
+        text: `${normalPercentage}% of your vital signs are within normal ranges. Regular tracking helps you and your healthcare provider monitor these values.`
+      });
+    }
+  }
+  
+  // Wellness insight
+  if (components.wellness && components.wellness.details.feelingDistribution) {
+    const { good } = components.wellness.details.feelingDistribution;
+    
+    if (good >= 70) {
+      insights.push({
+        type: 'wellness',
+        text: `You're reporting feeling good ${good}% of the time, which is excellent for your overall wellbeing.`
+      });
+    } else if (good >= 50) {
+      insights.push({
+        type: 'wellness',
+        text: `You're reporting feeling good ${good}% of the time. Your check-ins help identify what factors contribute to your better days.`
+      });
+    } else {
+      insights.push({
+        type: 'wellness',
+        text: `You're reporting feeling good ${good}% of the time. Tracking how you feel helps identify patterns that may affect your wellbeing.`
+      });
+    }
+  }
+  
+  // Lifestyle insight - focus on strongest and weakest factors
+  if (components.lifestyle) {
+    // Find highest and lowest scoring lifestyle factors
+    const factors = [];
+    
+    if (components.lifestyle.details.sleep) {
+      factors.push({
+        name: 'sleep',
+        score: components.lifestyle.details.sleep.isOptimal ? 100 : 
+               (components.lifestyle.details.sleep.averageHours >= 6 ? 70 : 40),
+        text: components.lifestyle.details.sleep.isOptimal ? 
+              'Your sleep patterns are in the optimal range' : 
+              `You're averaging ${components.lifestyle.details.sleep.averageHours} hours of sleep`
+      });
+    }
+    
+    if (components.lifestyle.details.stress) {
+      factors.push({
+        name: 'stress',
+        score: components.lifestyle.details.stress.isLow ? 100 : 
+               (components.lifestyle.details.stress.averageLevel <= 3 ? 70 : 40),
+        text: components.lifestyle.details.stress.isLow ? 
+              'Your stress levels are consistently low' : 
+              `Your average stress level is ${components.lifestyle.details.stress.averageLevel}/5`
+      });
+    }
+    
+    if (components.lifestyle.details.medicationAdherence) {
+      factors.push({
+        name: 'medication adherence',
+        score: components.lifestyle.details.medicationAdherence.isGood ? 100 : 
+               (components.lifestyle.details.medicationAdherence.rate >= 70 ? 70 : 40),
+        text: components.lifestyle.details.medicationAdherence.isGood ? 
+              'Your medication adherence is excellent' : 
+              `Your medication adherence rate is ${components.lifestyle.details.medicationAdherence.rate}%`
+      });
+    }
+    
+    if (components.lifestyle.details.exercise) {
+      factors.push({
+        name: 'exercise',
+        score: components.lifestyle.details.exercise.isSufficient ? 100 : 
+               (components.lifestyle.details.exercise.averageMinutes >= 10 ? 70 : 40),
+        text: components.lifestyle.details.exercise.isSufficient ? 
+              'Your regular exercise habits are beneficial' : 
+              `You're averaging ${components.lifestyle.details.exercise.averageMinutes} minutes of exercise`
+      });
+    }
+    
+    // Sort factors by score
+    factors.sort((a, b) => b.score - a.score);
+    
+    // Provide insight on strongest factor if available
+    if (factors.length > 0 && factors[0].score >= 70) {
+      insights.push({
+        type: 'lifestyle',
+        text: `Strength: ${factors[0].text}, which positively contributes to your overall health.`
+      });
+    }
+    
+    // Provide insight on weakest factor if it needs improvement
+    if (factors.length > 1 && factors[factors.length - 1].score < 70) {
+      insights.push({
+        type: 'lifestyle',
+        text: `Opportunity: ${factors[factors.length - 1].text}, which may be an area to consider for small improvements.`
+      });
+    }
+  }
+  
+  // Symptoms insight
+  if (components.symptoms) {
+    if (components.symptoms.details.noSymptoms) {
+      insights.push({
+        type: 'symptoms',
+        text: 'You haven\'t reported any symptoms recently, which positively affects your overall wellbeing.'
+      });
+    } else if (components.symptoms.details.recentSymptoms) {
+      const { count, days } = components.symptoms.details.recentSymptoms;
+      
+      if (count <= 2 && days <= 2) {
+        insights.push({
+          type: 'symptoms',
+          text: `You've experienced minimal symptoms recently (${count} symptom occurrences over ${days} days).`
+        });
+      } else {
+        insights.push({
+          type: 'symptoms',
+          text: `You've experienced symptoms on ${days} days recently. Tracking these patterns helps identify potential triggers or patterns.`
+        });
+      }
+    }
+  }
+  
+  return insights;
+}
+
+// Generate recommendations based on health score components
+function generateHealthScoreRecommendations(healthScore) {
+  const recommendations = [];
+  const { components } = healthScore;
+  
+  // Vitals recommendations
+  if (components.vitals && components.vitals.totalCount > 0) {
+    const normalPercentage = Math.round((components.vitals.normalCount / components.vitals.totalCount) * 100);
+    
+    if (normalPercentage < 70) {
+      // Check which vital signs were abnormal
+      const abnormalVitals = [];
+      
+      Object.entries(components.vitals.details).forEach(([type, details]) => {
+        if (!details.isNormal) {
+          abnormalVitals.push(type);
+        }
+      });
+      
+      if (abnormalVitals.length > 0) {
+        recommendations.push({
+          category: 'vitals',
+          text: `Consider discussing your ${abnormalVitals.join(', ')} readings with your healthcare provider during your next visit.`,
+          priority: 'medium'
+        });
+      }
+    }
+    
+    // If few vital signs recorded
+    if (components.vitals.totalCount < 3) {
+      recommendations.push({
+        category: 'vitals',
+        text: 'Regular monitoring of key vital signs provides valuable insights into your physical health. Consider tracking additional vital signs regularly.',
+        priority: 'low'
+      });
+    }
+  }
+  
+  // Wellness recommendations
+  if (components.wellness && components.wellness.details.feelingDistribution) {
+    const { good, poor } = components.wellness.details.feelingDistribution;
+    
+    if (poor > 30) {
+      recommendations.push({
+        category: 'wellness',
+        text: 'You\'re reporting feeling poor on many days. Consider reflecting on what factors might be affecting how you feel and what small changes might help.',
+        priority: 'high'
+      });
+    }
+    
+    if (good < 50) {
+      recommendations.push({
+        category: 'wellness',
+        text: 'Try to identify patterns on days when you feel better. What activities, sleep patterns, or other factors might be contributing to those good days?',
+        priority: 'medium'
+      });
+    }
+  }
+  
+  // Lifestyle-specific recommendations
+  if (components.lifestyle) {
+    // Sleep recommendations
+    if (components.lifestyle.details.sleep) {
+      const avgSleep = components.lifestyle.details.sleep.averageHours;
+      
+      if (avgSleep < 6) {
+        recommendations.push({
+          category: 'sleep',
+          text: `You're averaging ${avgSleep} hours of sleep, which is below recommendations. Consider setting a consistent bedtime routine and gradually increasing sleep duration.`,
+          priority: 'high'
+        });
+      } else if (avgSleep < 7) {
+        recommendations.push({
+          category: 'sleep',
+          text: `You're averaging ${avgSleep} hours of sleep. Increasing sleep time by just 30 minutes could help you reach the recommended 7-9 hours.`,
+          priority: 'medium'
+        });
+      }
+    }
+    
+    // Stress recommendations
+    if (components.lifestyle.details.stress) {
+      const avgStress = components.lifestyle.details.stress.averageLevel;
+      
+      if (avgStress > 3) {
+        recommendations.push({
+          category: 'stress',
+          text: 'Your stress levels are elevated. Simple stress management techniques like deep breathing, short walks, or brief mindfulness exercises might be helpful.',
+          priority: 'high'
+        });
+      }
+    }
+    
+    // Medication adherence recommendations
+    if (components.lifestyle.details.medicationAdherence) {
+      const adherenceRate = components.lifestyle.details.medicationAdherence.rate;
+      
+      if (adherenceRate < 70) {
+        recommendations.push({
+          category: 'medication',
+          text: 'Your medication adherence could be improved. Setting regular reminders or associating medication with a daily routine can help.',
+          priority: 'high'
+        });
+      } else if (adherenceRate < 90) {
+        recommendations.push({
+          category: 'medication',
+          text: 'Your medication adherence is good but could be better. Consider what factors might be causing occasional missed doses.',
+          priority: 'medium'
+        });
+      }
+    }
+    
+    // Exercise recommendations
+    if (components.lifestyle.details.exercise) {
+      const avgExercise = components.lifestyle.details.exercise.averageMinutes;
+      
+      if (avgExercise < 10) {
+        recommendations.push({
+          category: 'exercise',
+          text: 'Even a few minutes of light physical activity can provide health benefits. Consider short, gentle activities like brief walks or simple stretching.',
+          priority: 'medium'
+        });
+      } else if (avgExercise < 30) {
+        recommendations.push({
+          category: 'exercise',
+          text: `You're getting some activity with ${avgExercise} minutes of exercise. Gradually increasing this time could provide additional health benefits.`,
+          priority: 'low'
+        });
+      }
+    }
+  }
+  
+  // Symptom recommendations
+  if (components.symptoms && components.symptoms.details.recentSymptoms) {
+    const { count, days } = components.symptoms.details.recentSymptoms;
+    
+    if (count > 5 && days > 3) {
+      recommendations.push({
+        category: 'symptoms',
+        text: 'You\'ve been experiencing frequent symptoms recently. Consider tracking any patterns in when they occur and what might trigger them.',
+        priority: 'high'
+      });
+    }
+    
+    if (components.symptoms.details.averageSeverity && components.symptoms.details.averageSeverity > 3) {
+      recommendations.push({
+        category: 'symptoms',
+        text: 'You\'re experiencing symptoms with moderate to high severity. Consider discussing these with your healthcare provider if they persist.',
+        priority: 'high'
+      });
+    }
+  }
+  
+  // Sort recommendations by priority
+  return recommendations.sort((a, b) => {
+    const priorityRank = { high: 0, medium: 1, low: 2 };
+    return priorityRank[a.priority] - priorityRank[b.priority];
+  });
+}
+
 module.exports = exports;

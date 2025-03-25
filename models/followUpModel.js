@@ -64,4 +64,4 @@ const FollowUpSchema = new mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model('FollowUp', FollowUpSchema);
+module.exports = mongoose.models.FollowUp || mongoose.model('FollowUp', FollowUpSchema);
