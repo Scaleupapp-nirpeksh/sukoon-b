@@ -13,6 +13,7 @@ const medicationRoutes = require('./routes/medicationRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const caregiverRoutes = require('./routes/caregiverRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
+const { startScheduler } = require('./services/schedulerService');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorMiddleware');
@@ -54,6 +55,7 @@ mongoose
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      startScheduler();
     });
   })
   .catch((err) => {

@@ -58,6 +58,18 @@ const VitalSignSchema = new mongoose.Schema(
       type: String,
       enum: ['active', 'archived', 'flagged'],
       default: 'active'
+    },
+    isFollowUp: {
+      type: Boolean,
+      default: false
+    },
+    originalVitalSignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'VitalSign'
+    },
+    followUpSequence: {
+      type: Number,
+      default: 0
     }
   },
   {
@@ -96,7 +108,7 @@ const HealthCheckInSchema = new mongoose.Schema(
     aiAssessment: {
       riskLevel: { 
         type: String, 
-        enum: ['low', 'medium', 'high'],
+        enum: ['low', 'medium', 'high', 'emergency'],
         index: true // Indexed for risk-based queries
       },
       recommendations: [{ type: String }],
@@ -143,6 +155,33 @@ const HealthCheckInSchema = new mongoose.Schema(
       type: { type: String, enum: ['Point'] },
       coordinates: { type: [Number] } // [longitude, latitude]
     },
+    followUpQuestions: [{ type: String }],
+    followUpResponses: [{
+      question: { type: String },
+      response: { type: String },
+      timestamp: { type: Date, default: Date.now }
+    }],
+    conversationStage: {
+      type: String,
+      enum: ['initial', 'follow_up', 'completed'],
+      default: 'initial'
+    },
+    isFollowUp: {
+      type: Boolean,
+      default: false
+    },
+    originalCheckInId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'HealthCheckIn'
+    },
+    furtherFollowUpRequired: {
+      type: Boolean,
+      default: false
+    },
+    followUpSequence: {
+      type: Number,
+      default: 0
+    },
     weather: {
       temperature: { type: Number },
       humidity: { type: Number },
@@ -159,12 +198,98 @@ const HealthCheckInSchema = new mongoose.Schema(
   }
 );
 
+// Follow-Up Schema - used to schedule and track follow-ups
+const FollowUpSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true
+    },
+    originalCheckInId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'HealthCheckIn',
+      required: true
+    },
+    originalVitalSignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'VitalSign'
+    },
+    scheduledTime: {
+      type: Date,
+      required: true,
+      index: true  // Index for scheduled time queries
+    },
+    symptoms: [{
+      name: { type: String },
+      severity: { type: Number, min: 1, max: 5 },
+      bodyLocation: { type: String },
+      startTime: { type: Date }
+    }],
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'missed', 'rescheduled'],
+      default: 'pending',
+      index: true  // Index for status queries
+    },
+    riskLevel: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'emergency'],
+      required: true
+    },
+    completedAt: {
+      type: Date
+    },
+    responseCheckInId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'HealthCheckIn'
+    },
+    responseVitalSignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'VitalSign'
+    },
+    notificationSent: {
+      type: Boolean,
+      default: false
+    },
+    followUpType: {
+      type: String,
+      enum: ['health_check', 'vital_sign', 'medication_adherence'],
+      default: 'health_check'
+    },
+    followUpCount: {
+      type: Number,
+      default: 1
+    },
+    notes: {
+      type: String
+    },
+    notificationData: {
+      title: { type: String },
+      body: { type: String },
+      data: { type: mongoose.Schema.Types.Mixed }
+    }
+  },
+  {
+    timestamps: true,
+  }
+);
+
 // Add geospatial index if location tracking is enabled
 HealthCheckInSchema.index({ location: '2dsphere' });
+
+// Create additional indexes for performance
+FollowUpSchema.index({ userId: 1, status: 1 });
+FollowUpSchema.index({ scheduledTime: 1, status: 1, notificationSent: 1 });
+VitalSignSchema.index({ userId: 1, type: 1, timestamp: -1 });
+HealthCheckInSchema.index({ userId: 1, createdAt: -1 });
+HealthCheckInSchema.index({ originalCheckInId: 1, isFollowUp: 1 });
 
 // Create models from schemas
 const VitalSign = mongoose.model('VitalSign', VitalSignSchema);
 const HealthCheckIn = mongoose.model('HealthCheckIn', HealthCheckInSchema);
+const FollowUp = mongoose.model('FollowUp', FollowUpSchema);
 
 // Export models
-module.exports = { VitalSign, HealthCheckIn };
+module.exports = { VitalSign, HealthCheckIn, FollowUp };
