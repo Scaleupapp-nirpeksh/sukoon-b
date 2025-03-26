@@ -38,4 +38,14 @@ router.post('/reminders/:id/respond', medicationReminderController.respondToRemi
 router.post('/:medicationId/reminders', medicationReminderController.createReminders);
 router.delete('/reminders/:id', medicationReminderController.deleteReminder);
 
+// Analytics routes - redirect to the analytics router
+// These are for documentation purposes to show all available endpoints
+// The actual implementation is in the medicationAnalyticsRoutes.js file
+// You can access these routes via: /api/medications/analytics/...
+router.get('/analytics/adherence', (req, res, next) => next());
+router.get('/analytics/recommendations', (req, res, next) => next());
+router.get('/analytics/predictive', (req, res, next) => next());
+router.get('/analytics/consumption', (req, res, next) => next());
+router.get('/analytics/health-correlations', (req, res, next) => next());
+
 module.exports = router;
