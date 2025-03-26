@@ -12,7 +12,6 @@ const logger = require('../utils/logger');
  * Add new medication
  * @route POST /api/medications
  */
-
   exports.addMedication = async (req, res) => {
   try {
     const {
