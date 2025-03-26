@@ -31,4 +31,8 @@ router.get('/dashboard', aiLimiter, healthController.getHealthDashboard);
 router.get('/vitals/trends', healthController.getVitalTrends);
 router.get('/vitals/correlations', healthController.getVitalCorrelations);
 router.get('/symptoms/patterns', healthController.getSymptomPatterns);
+router.get('/lifestyle/trends', healthController.getLifestyleTrends);
+router.get('/wellness/trends', healthController.getWellnessTrends);
+router.get('/health-score', healthController.getHealthScore);
+
 module.exports = router;
