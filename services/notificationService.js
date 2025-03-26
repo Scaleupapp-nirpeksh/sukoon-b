@@ -1,7 +1,15 @@
 const User = require('../models/userModel');
 const logger = require('../utils/logger');
 
-// Function to send push notification
+const admin = require('firebase-admin');
+
+if (!admin.apps.length) {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
+
 async function sendPushNotification(userId, title, body, data = {}) {
   try {
     // Get user FCM tokens
@@ -11,27 +19,18 @@ async function sendPushNotification(userId, title, body, data = {}) {
       throw new Error('User has no FCM tokens registered');
     }
     
-    // In a real implementation, you would use Firebase Admin SDK
-    // Here's a placeholder for the implementation
-    
-    /*
-    const admin = require('firebase-admin');
-    
-    // Send to all user devices
+    // Create messages for each token
     const messages = user.fcmTokens.map(token => ({
       token,
       notification: {
         title,
         body,
       },
-      data
+      data, // Optional: convert data values to strings if necessary
     }));
     
     const response = await admin.messaging().sendAll(messages);
-    */
-    
-    // For now, just log that we would send a notification
-    logger.info(`PUSH NOTIFICATION to user ${userId}: ${title} - ${body}`);
+    logger.info(`Push notification sent to user ${userId}: ${title} - ${body}`, response);
     
     return true;
   } catch (error) {
