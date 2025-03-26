@@ -15,7 +15,7 @@ const healthRoutes = require('./routes/healthRoutes');
 const caregiverRoutes = require('./routes/caregiverRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const prescriptionRoutes = require('./routes/prescriptionRoutes');
-const medicationAnalyticsRoutes = require('./routes/medicationAnalyticsRoutes'); // New analytics routes
+//const medicationAnalyticsRoutes = require('./routes/medicationAnalyticsRoutes'); // New analytics routes
 
 // Import schedulers with try/catch to make them optional
 let startScheduler, startMedicationScheduler;
@@ -55,7 +55,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/medications', medicationRoutes);
-app.use('/api/medications/analytics', medicationAnalyticsRoutes); // New analytics routes
+//app.use('/api/medications/analytics', medicationAnalyticsRoutes); // New analytics routes
 app.use('/api/health', healthRoutes);
 app.use('/api/care', caregiverRoutes);
 app.use('/api/emergency', emergencyRoutes);
