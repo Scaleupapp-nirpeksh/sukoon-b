@@ -15,6 +15,9 @@ const healthRoutes = require('./routes/healthRoutes');
 const caregiverRoutes = require('./routes/caregiverRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const prescriptionRoutes = require('./routes/prescriptionRoutes');
+const medicationEfficacyRoutes = require('./routes/medicationEfficacyRoutes');
+
+
 //const medicationAnalyticsRoutes = require('./routes/medicationAnalyticsRoutes'); // New analytics routes
 
 // Import schedulers with try/catch to make them optional
@@ -60,6 +63,9 @@ app.use('/api/health', healthRoutes);
 app.use('/api/care', caregiverRoutes);
 app.use('/api/emergency', emergencyRoutes);
 app.use('/api/prescriptions', prescriptionRoutes);
+app.use('/api', medicationEfficacyRoutes);
+
+
 
 // Health check endpoint
 app.get('/health', (req, res) => {
