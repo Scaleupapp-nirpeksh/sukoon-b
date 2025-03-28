@@ -17,11 +17,9 @@ const emergencyRoutes = require('./routes/emergencyRoutes');
 const prescriptionRoutes = require('./routes/prescriptionRoutes');
 const medicationEfficacyRoutes = require('./routes/medicationEfficacyRoutes');
 
-
-//const medicationAnalyticsRoutes = require('./routes/medicationAnalyticsRoutes'); // New analytics routes
-
 // Import schedulers with try/catch to make them optional
-let startScheduler, startMedicationScheduler;
+let startScheduler, startMedicationScheduler, startCaregiverReportScheduler;
+
 try {
   const schedulerService = require('./services/schedulerService');
   startScheduler = schedulerService.startScheduler;
@@ -36,6 +34,14 @@ try {
 } catch (error) {
   console.log('Medication scheduler not available:', error.message);
   startMedicationScheduler = () => console.log('Medication scheduler disabled');
+}
+
+try {
+  const caregiverReportService = require('./services/caregiverReportService');
+  startCaregiverReportScheduler = caregiverReportService.startCaregiverReportScheduler;
+} catch (error) {
+  console.log('Caregiver report service not available:', error.message);
+  startCaregiverReportScheduler = () => console.log('Caregiver report service disabled');
 }
 
 // Import middleware
@@ -58,14 +64,11 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/medications', medicationRoutes);
-//app.use('/api/medications/analytics', medicationAnalyticsRoutes); // New analytics routes
 app.use('/api/health', healthRoutes);
 app.use('/api/care', caregiverRoutes);
 app.use('/api/emergency', emergencyRoutes);
 app.use('/api/prescriptions', prescriptionRoutes);
 app.use('/api', medicationEfficacyRoutes);
-
-
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -75,7 +78,7 @@ app.get('/health', (req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-// Connect to MongoDB
+// Connect to MongoDB and start server
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
@@ -86,6 +89,7 @@ mongoose
       // Start schedulers if available
       startScheduler();
       startMedicationScheduler();
+      startCaregiverReportScheduler();
     });
   })
   .catch((err) => {
