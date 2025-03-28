@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 const OpenAI = require('openai');
 const { sendPushNotification } = require('../services/notificationService');
+const SymptomCorrelationService = require('../services/symptomCorrelationService');
 
 // Initialize OpenAI API
 const openai = new OpenAI({
@@ -469,6 +470,18 @@ exports.getHealthDashboard = async (req, res) => {
     
     // Get symptom patterns
     const symptomPatterns = await analyzeSymptomPatterns(req.user._id);
+
+    // Get symptom-medication correlations
+    const correlationService = new SymptomCorrelationService();
+    const correlationResults = await correlationService.analyzeCorrelations(
+      req.user._id.toString(),
+      { timeframeInDays: 30 } // Use last 30 days for dashboard
+    );
+
+    // Only include significant correlations
+    const significantCorrelations = correlationResults.medicationSymptomCorrelations
+      .filter(c => Math.abs(c.correlation) > 0.3)
+      .slice(0, 3); // Top 3 most significant
     
     // Get health insights using AI
     const healthInsights = await generateHealthDashboardInsights(
@@ -478,7 +491,8 @@ exports.getHealthDashboard = async (req, res) => {
       vitalTrends,
       wellnessTrends,
       lifestyleTrends,
-      symptomPatterns
+      symptomPatterns,
+      significantCorrelations // Pass the correlations to the insights function
     );
     
     // Calculate health score
@@ -486,7 +500,8 @@ exports.getHealthDashboard = async (req, res) => {
       latestVitals,
       wellnessTrends,
       lifestyleTrends,
-      symptomPatterns
+      symptomPatterns,
+      significantCorrelations // Pass the correlations to the health score calculation
     );
     
     res.status(200).json({
@@ -500,7 +515,8 @@ exports.getHealthDashboard = async (req, res) => {
         lifestyleTrends,
         vitalCorrelations,
         symptomPatterns,
-        insights: healthInsights
+        insights: healthInsights,
+        symptomCorrelations: significantCorrelations
       }
     });
   } catch (error) {
@@ -626,7 +642,7 @@ function checkIfNormal(type, values) {
 }
 
 // Calculate health score from various metrics
-function calculateHealthScore(latestVitals, wellnessTrends, lifestyleTrends, symptomPatterns) {
+function calculateHealthScore(latestVitals, wellnessTrends, lifestyleTrends, symptomPatterns, symptomCorrelations) {
   try {
     let score = 70; // Start with a baseline score
     
@@ -662,6 +678,30 @@ function calculateHealthScore(latestVitals, wellnessTrends, lifestyleTrends, sym
     // Adjust for symptom frequency
     if (symptomPatterns && symptomPatterns.recentSymptomCount) {
       score -= Math.min(10, symptomPatterns.recentSymptomCount);
+    }
+    
+    // Adjust for symptom-medication correlations
+    if (symptomCorrelations && symptomCorrelations.length > 0) {
+      // Look for concerning strong positive correlations (medication associated with symptoms)
+      const concerningCorrelations = symptomCorrelations.filter(
+        c => c.correlation > 0.5 && c.direction === 'positive'
+      );
+      
+      // Look for beneficial strong negative correlations (medication potentially reducing symptoms)
+      const beneficialCorrelations = symptomCorrelations.filter(
+        c => c.correlation < -0.5 && c.direction === 'negative'
+      );
+      
+      // Adjust score based on correlation findings
+      if (concerningCorrelations.length > 0) {
+        // More concerning correlations lower the score
+        score -= Math.min(10, concerningCorrelations.length * 5);
+      }
+      
+      if (beneficialCorrelations.length > 0) {
+        // More beneficial correlations raise the score
+        score += Math.min(10, beneficialCorrelations.length * 5);
+      }
     }
     
     // Cap the score between 0 and 100
@@ -2334,7 +2374,16 @@ async function getLatestVitalSigns(userId) {
 }
 
 // Generate health dashboard insights using AI with a reassuring tone
-async function generateHealthDashboardInsights(userId, latestVitals, latestCheckIn, vitalTrends, wellnessTrends, lifestyleTrends, symptomPatterns) {
+async function generateHealthDashboardInsights(
+  userId, 
+  latestVitals, 
+  latestCheckIn,
+  vitalTrends,
+  wellnessTrends,
+  lifestyleTrends,
+  symptomPatterns,
+  symptomCorrelations
+) {
   try {
     // Skip AI processing in development mode
     if (process.env.NODE_ENV === 'development') {
@@ -2399,13 +2448,23 @@ async function generateHealthDashboardInsights(userId, latestVitals, latestCheck
       symptomSummary = `Most frequent symptoms: ${topSymptoms.map(s => s.name).join(', ')}`;
     }
     
+    // Prepare correlation summary
+    let correlationSummary = '';
+    if (symptomCorrelations && symptomCorrelations.length > 0) {
+      correlationSummary = `Significant medication-symptom correlations: ${symptomCorrelations.map(c => 
+        `${c.medicationName} and ${c.symptomName} (${c.strength} ${c.direction} correlation)`
+      ).join('; ')}`;
+    }
+    
     // Call OpenAI for dashboard insights with a reassuring tone
-    const prompt = `As a compassionate healthcare assistant, provide 3 personalized, reassuring health insights based on this data summary:
+    const prompt = `
+      As a compassionate healthcare assistant, provide 3-5 personalized, reassuring health insights based on this data summary:
       ${vitalSummary}
       ${feelingSummary}
       ${wellnessSummary}
       ${lifestyleSummary}
       ${symptomSummary}
+      ${correlationSummary}
       
       Your insights should be:
       1. Warm and supportive in tone - never alarming or clinical
@@ -2426,9 +2485,23 @@ async function generateHealthDashboardInsights(userId, latestVitals, latestCheck
     });
     
     // Parse the response
-    const insights = JSON.parse(completion.choices[0].message.content.trim());
-    
-    return insights;
+    try {
+      const insights = JSON.parse(completion.choices[0].message.content.trim());
+      return insights;
+    } catch (parseError) {
+      logger.error('Error parsing AI insights:', parseError);
+      
+      // Fall back to extracting insights from non-JSON response
+      const responseText = completion.choices[0].message.content.trim();
+      
+      // Extract insights by line breaks or numbered points
+      const extractedInsights = responseText
+        .split(/\n|\d\./)
+        .map(line => line.trim())
+        .filter(line => line.length > 20);
+        
+      return extractedInsights.length > 0 ? extractedInsights : [responseText];
+    }
   } catch (error) {
     logger.error('Error generating dashboard insights:', error);
     // Fallback insights in case of API error - with reassuring tone

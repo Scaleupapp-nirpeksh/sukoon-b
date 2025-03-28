@@ -1,4 +1,4 @@
-// server.js
+// server.js (updated)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -16,6 +16,7 @@ const caregiverRoutes = require('./routes/caregiverRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const prescriptionRoutes = require('./routes/prescriptionRoutes');
 const medicationEfficacyRoutes = require('./routes/medicationEfficacyRoutes');
+const symptomCorrelationRoutes = require('./routes/symptomCorrelationRoutes'); // New route
 
 // Import schedulers with try/catch to make them optional
 let startScheduler, startMedicationScheduler, startCaregiverReportScheduler;
@@ -65,6 +66,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/api/health', symptomCorrelationRoutes); // Add symptom correlation routes to health endpoint
 app.use('/api/care', caregiverRoutes);
 app.use('/api/emergency', emergencyRoutes);
 app.use('/api/prescriptions', prescriptionRoutes);
